@@ -25,17 +25,51 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 20
-          cache: npm
+          # 注意：不使用 cache: npm
+          # 原因：setup-node 默认缓存键不包含 .npmrc，
+          # 一旦某次 workflow 因 devDep 被跳过而把坏 node_modules 缓存下来，
+          # 后续再改 .npmrc / --include=dev 都白搭，缓存会被反复还原。
+          # 本项目依赖量中等（electron + electron-builder + vite + tsc + vitest），
+          # 重装一次约 1~2 分钟，牺牲几秒换确定性更划算。
 
       # Electron 二进制 + onnxruntime-node 原生 .node 必须在 Windows runner 下载
-      # 注意：npm ci 在某些 CI 环境会因 NODE_ENV=production 或 npm 配置跳过
-      # devDependencies（electron / electron-builder / vitest / tsc 全在 devDep），
-      # 因此显式加 --include=dev；.npmrc 里也做了 include=dev 双保险
       - name: Install dependencies
         env:
           ELECTRON_MIRROR: https://npmmirror.com/mirrors/electron/
+          # 显式 NODE_ENV='' 防止 runner 从系统变量继承 production
           NODE_ENV: ''
-        run: npm ci --include=dev
+        shell: pwsh
+        run: |
+          # 强制清掉可能遗留的旧 node_modules，避免半安装状态复现
+          if (Test-Path node_modules) { Remove-Item -Recurse -Force node_modules }
+          npm ci --include=dev --no-audit --no-fund
+
+      # 硬校验：devDep 里关键的 CLI 必须真实落到 node_modules/.bin
+      # 任何一个缺失 → 直接终止 workflow，避免到打包步骤才炸（错误信息更含糊）
+      - name: Verify devDependencies installed
+        shell: pwsh
+        run: |
+          $missing = @()
+          @(
+            @{ pkg='electron-vite'; bin='electron-vite.cmd' },
+            @{ pkg='electron-builder'; bin='electron-builder.cmd' },
+            @{ pkg='typescript'; bin='tsc.cmd' },
+            @{ pkg='vitest'; bin='vitest.cmd' }
+          ) | ForEach-Object {
+            $binPath = Join-Path 'node_modules\.bin' $_.bin
+            $pkgPath = Join-Path "node_modules\$($_.pkg)\package.json"
+            if (-not (Test-Path $binPath)) {
+              $missing += "bin 缺失: $binPath"
+            }
+            if (-not (Test-Path $pkgPath)) {
+              $missing += "包缺失: $pkgPath"
+            }
+          }
+          if ($missing.Count -gt 0) {
+            Write-Error "devDependencies 安装不完整！`n$($missing -join "`n")`n请检查 npm ci 是否因 NODE_ENV / npm config 跳过了 devDep。"
+            exit 1
+          }
+          Write-Host 'devDependencies 校验通过 ✓'
 
       # 先跑类型检查与单测，避免把坏代码打包进 Release
       - name: Typecheck & Unit Tests
