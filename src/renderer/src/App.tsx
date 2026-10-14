@@ -7,6 +7,7 @@ import { ModelPanel } from './components/ModelPanel'
 import { CachePanel } from './components/CachePanel'
 import { TaskPanel } from './components/TaskPanel'
 import { Annotator } from './components/Annotator'
+import { AnnotatorEntry } from './components/AnnotatorEntry'
 import { LogPanel } from './components/LogPanel'
 
 const NAV: Array<{ key: ReturnType<typeof useStore.getState>['panel']; label: string }> = [
@@ -19,6 +20,9 @@ const NAV: Array<{ key: ReturnType<typeof useStore.getState>['panel']; label: st
   { key: 'log', label: '日志' }
 ]
 
+/** 独立标注工作台窗口（annotator-window.ts 以 hash='#annotator' 加载本入口） */
+const IS_ANNOTATOR = window.location.hash.replace(/^#\/?/, '') === 'annotator'
+
 export default function App(): JSX.Element {
   const panel = useStore((s) => s.panel)
   const setPanel = useStore((s) => s.setPanel)
@@ -26,6 +30,11 @@ export default function App(): JSX.Element {
   const ready = useStore((s) => s.ready)
 
   useEffect(() => init(), [init])
+
+  if (IS_ANNOTATOR) {
+    // 工作台窗口不需要标签栏/侧栏状态，直接整页渲染
+    return <Annotator />
+  }
 
   return (
     <div className="app">
@@ -50,7 +59,7 @@ export default function App(): JSX.Element {
               {panel === 'model' && <ModelPanel />}
               {panel === 'cache' && <CachePanel />}
               {panel === 'task' && <TaskPanel />}
-              {panel === 'annotate' && <Annotator />}
+              {panel === 'annotate' && <AnnotatorEntry />}
               {panel === 'log' && <LogPanel />}
             </>
           )}

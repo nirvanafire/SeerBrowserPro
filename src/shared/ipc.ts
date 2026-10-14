@@ -48,8 +48,10 @@ export const IPC = {
   TaskStop: 'task:stop',
   TaskState: 'task:state',
   ActionClickDetection: 'action:click-detection',
+  ActionClickModule: 'action:click-module',
 
   // 标注 / 数据集
+  AnnotatorOpen: 'annotator:open',
   AnnotateSave: 'annotate:save',
   DatasetInfo: 'dataset:info',
   ShellOpenUserData: 'shell:open-userdata',

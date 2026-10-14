@@ -1,18 +1,43 @@
 /**
- * Canvas 探针：通过 executeJavaScript 在页面主世界执行只读脚本，
- * 枚举全部 <canvas> 的上下文类型、backing store 尺寸、视口矩形、可见性与 CSS 选择器。
+ * Canvas 探针：遍历 WebContents 的整棵 frame 树（含跨源 iframe），
+ * 在每个 frame 主世界执行只读脚本枚举 <canvas>，并把坐标统一换算到顶层视口。
  *
- * 上下文类型优先读取 CDP 注入钩子（Page.addScriptToEvaluateOnNewDocument）
- * 记录的 data-seer-ctx（对页面零副作用）；无记录时（调试器附加失败等）
- * 才在页面加载完成后回退调用 getContext 探测。
+ * - 每个 frame 的脚本枚举本 document 的 canvas + iframe 元素（src/name/rect）
+ * - 主进程用 frame-matcher 把 iframe 元素与子 WebFrameMain 对应，递归下钻
+ * - iframe 内 Canvas 的 rect = 本 frame 视口坐标 + 祖先 iframe 内容原点累计偏移
+ *
+ * 上下文类型优先读取 CDP 注入钩子（Page.addScriptToEvaluateOnNewDocument，对所有
+ * frame 生效）记录的 data-seer-ctx；无记录时才回退调用 getContext 探测。
  */
-import type { WebContents } from 'electron'
-import type { CanvasInfo, Rect } from '@shared/types'
+import type { WebContents, WebFrameMain } from 'electron'
+import type { CanvasInfo, CanvasSelection, Rect } from '@shared/types'
+import { matchChildFrameIndex, type IframeElementInfo } from './frame-matcher'
+
+const MAX_DEPTH = 6
+const TOP_PATH = 'top'
+
+/** 注入脚本原始返回（canvas 的 rect 相对本 frame 视口） */
+interface FrameProbePayload {
+  canvases: Array<{
+    selector: string
+    id: string
+    className: string
+    contextType: string
+    width: number
+    height: number
+    rect: Rect
+    visible: boolean
+  }>
+  iframes: IframeElementInfo[]
+}
 
 /**
- * 注意：该函数体会被序列化后注入页面执行，不能引用 Node/Electron 作用域中的任何变量。
+ * 注意：以下函数体会被序列化后注入各 frame 执行，
+ * 不能引用 Node/Electron 作用域中的任何变量。
  */
-function pageProbe(): unknown {
+
+/** 枚举本 document 的 canvas（可选仅查询指定选择器）与 iframe 元素 */
+function pageProbe(onlySelector?: string): unknown {
   const buildSelector = (el: Element): string => {
     if (el.id) return '#' + CSS.escape(el.id)
     const parts: string[] = []
@@ -37,7 +62,7 @@ function pageProbe(): unknown {
     return parts.join(' > ')
   }
 
-  const isVisible = (el: HTMLCanvasElement, rect: DOMRect): boolean => {
+  const isVisible = (el: Element, rect: DOMRect): boolean => {
     const st = getComputedStyle(el)
     return (
       rect.width > 1 &&
@@ -75,56 +100,287 @@ function pageProbe(): unknown {
     return 'unknown'
   }
 
-  return Array.from(document.querySelectorAll('canvas')).map((c, index) => {
+  let canvasEls: HTMLCanvasElement[]
+  if (onlySelector) {
+    const el = document.querySelector(onlySelector)
+    canvasEls = el && el.tagName === 'CANVAS' ? [el as HTMLCanvasElement] : []
+  } else {
+    canvasEls = Array.from(document.querySelectorAll('canvas'))
+  }
+
+  const canvases = canvasEls.map((c) => {
     const r = c.getBoundingClientRect()
-    const rect: Rect = { x: r.x, y: r.y, width: r.width, height: r.height }
     return {
-      index,
       selector: buildSelector(c),
       id: c.id,
       className: typeof c.className === 'string' ? c.className : '',
       contextType: detectContext(c),
       width: c.width,
       height: c.height,
-      rect,
-      visible: isVisible(c, r),
-      activity: 0,
-      score: 0
+      rect: { x: r.x, y: r.y, width: r.width, height: r.height },
+      visible: isVisible(c, r)
+    }
+  })
+
+  const iframes = Array.from(document.querySelectorAll('iframe')).map((el, domIndex) => {
+    const r = el.getBoundingClientRect()
+    // 内容坐标原点 = border 内缘（clientLeft/clientTop 即渲染后的 border 宽度）
+    return {
+      domIndex,
+      src: el.src || '',
+      name: el.name || el.id || '',
+      rect: { x: r.x + el.clientLeft, y: r.y + el.clientTop, width: el.clientWidth, height: el.clientHeight },
+      visible: isVisible(el, r)
+    }
+  })
+
+  return { canvases, iframes }
+}
+
+/** 查询本 document 中指定选择器（或下标）canvas 的视口矩形 */
+function rectProbe(selector: string | null, index: number): unknown {
+  let el: Element | null = null
+  if (selector) {
+    el = document.querySelector(selector)
+    if (el && el.tagName !== 'CANVAS') el = null
+  } else {
+    el = document.querySelectorAll('canvas')[index] ?? null
+  }
+  if (!el) return null
+  const r = el.getBoundingClientRect()
+  return { x: r.x, y: r.y, width: r.width, height: r.height }
+}
+
+/** 仅枚举本 document 的 iframe 元素（下钻定位用，比 pageProbe 轻量） */
+function iframeListProbe(): unknown {
+  return Array.from(document.querySelectorAll('iframe')).map((el, domIndex) => {
+    const r = el.getBoundingClientRect()
+    return {
+      domIndex,
+      src: el.src || '',
+      name: el.name || el.id || '',
+      rect: { x: r.x + el.clientLeft, y: r.y + el.clientTop, width: el.clientWidth, height: el.clientHeight },
+      visible: r.width > 1 && r.height > 1
     }
   })
 }
 
-export async function probeCanvases(wc: WebContents): Promise<CanvasInfo[]> {
-  const raw = (await wc.executeJavaScript(`(${pageProbe.toString()})()`)) as CanvasInfo[]
-  if (!Array.isArray(raw)) return []
-  // 重新编号（防御页面篡改）
-  return raw.map((c, i) => ({ ...c, index: c.index ?? i, activity: 0, score: 0 }))
+interface FrameTarget {
+  frame: WebFrameMain
+  ox: number
+  oy: number
 }
 
-/** 通过 CSS 选择器查询单个 canvas 的信息（手动配置路径） */
+/**
+ * 按探测时记录的 framePath（如 'top › iframe[2] › iframe[0]'）逐层下钻定位 frame，
+ * 同时累计各层 iframe 内容原点偏移。结构变化导致匹配失败时返回 null。
+ */
+async function drillToFrame(
+  frame: WebFrameMain,
+  targetPath: string,
+  path: string,
+  ox: number,
+  oy: number,
+  depth: number
+): Promise<FrameTarget | null> {
+  if (path === targetPath) return { frame, ox, oy }
+  if (depth > MAX_DEPTH) return null
+  let iframes: IframeElementInfo[]
+  try {
+    iframes = (await frame.executeJavaScript(`(${iframeListProbe.toString()})()`)) as IframeElementInfo[]
+  } catch {
+    return null
+  }
+  if (!Array.isArray(iframes)) return null
+  const children = frame.frames
+  const taken = new Set<number>()
+  for (const el of iframes) {
+    const ci = matchChildFrameIndex(children, el, taken)
+    if (ci < 0) continue
+    taken.add(ci)
+    const childPath = `${path} › iframe[${el.domIndex}]`
+    // targetPath 只可能出现在匹配路径的子树里，前缀不符可剪枝
+    if (!targetPath.startsWith(childPath)) continue
+    const hit = await drillToFrame(
+      children[ci],
+      targetPath,
+      childPath,
+      ox + el.rect.x,
+      oy + el.rect.y,
+      depth + 1
+    )
+    if (hit) return hit
+  }
+  return null
+}
+
+async function execProbe(frame: WebFrameMain, onlySelector?: string): Promise<FrameProbePayload | null> {
+  const arg = onlySelector ? JSON.stringify(onlySelector) : 'undefined'
+  try {
+    const payload = (await frame.executeJavaScript(`(${pageProbe.toString()})(${arg})`)) as FrameProbePayload
+    return payload && typeof payload === 'object' ? payload : null
+  } catch {
+    return null
+  }
+}
+
+/** 遍历整棵 frame 树，枚举全部 Canvas（rect 已换算为顶层视口 CSS 坐标） */
+export async function probeCanvases(wc: WebContents): Promise<CanvasInfo[]> {
+  const out: CanvasInfo[] = []
+
+  const walk = async (
+    frame: WebFrameMain,
+    ox: number,
+    oy: number,
+    path: string,
+    depth: number,
+    ancestorVisible: boolean
+  ): Promise<void> => {
+    if (depth > MAX_DEPTH) return
+    const payload = await execProbe(frame)
+    if (!payload) return
+    for (const c of payload.canvases ?? []) {
+      out.push({
+        index: -1,
+        selector: c.selector,
+        framePath: path,
+        frameUrl: frame.url,
+        id: c.id,
+        className: c.className,
+        contextType: c.contextType,
+        width: c.width,
+        height: c.height,
+        rect: { x: c.rect.x + ox, y: c.rect.y + oy, width: c.rect.width, height: c.rect.height },
+        visible: c.visible && ancestorVisible,
+        activity: 0,
+        score: 0
+      })
+    }
+    const children = frame.frames
+    const taken = new Set<number>()
+    for (const el of payload.iframes ?? []) {
+      const ci = matchChildFrameIndex(children, el, taken)
+      if (ci < 0) continue
+      taken.add(ci)
+      await walk(
+        children[ci],
+        ox + el.rect.x,
+        oy + el.rect.y,
+        `${path} › iframe[${el.domIndex}]`,
+        depth + 1,
+        ancestorVisible && el.visible
+      )
+    }
+  }
+
+  await walk(wc.mainFrame, 0, 0, TOP_PATH, 0, true)
+  // 统一全局编号（防御页面篡改）
+  return out.map((c, i) => ({ ...c, index: i }))
+}
+
+/** 通过 CSS 选择器查询单个 canvas（跨 frame 搜索，手动配置路径） */
 export async function probeBySelector(
   wc: WebContents,
   selector: string
 ): Promise<CanvasInfo | null> {
-  const list = await probeCanvases(wc)
-  const matched = list.find((c) => c.selector === selector)
-  if (matched) return matched
-  // 选择器可能由用户手写：验证它确实指向一个 canvas
-  const exists = await wc.executeJavaScript(
-    `(() => { const el = document.querySelector(${JSON.stringify(selector)}); return !!(el && el.tagName === 'CANVAS'); })()`
-  )
-  if (!exists) return null
-  const full = await wc.executeJavaScript(
-    `(() => {
-      const el = document.querySelector(${JSON.stringify(selector)});
-      const r = el.getBoundingClientRect();
-      return { index: -1, selector: ${JSON.stringify(selector)}, id: el.id, className: el.className || '',
-        contextType: el.getAttribute('data-seer-ctx') || 'unknown', width: el.width, height: el.height,
-        rect: { x: r.x, y: r.y, width: r.width, height: r.height }, visible: r.width > 1 && r.height > 1,
-        activity: 0, score: 0 };
-    })()`
-  )
-  return full as CanvasInfo
+  let found: CanvasInfo | null = null
+
+  const walk = async (
+    frame: WebFrameMain,
+    ox: number,
+    oy: number,
+    path: string,
+    depth: number
+  ): Promise<boolean> => {
+    if (depth > MAX_DEPTH) return false
+    const payload = await execProbe(frame, selector)
+    if (!payload) return false
+    const c = payload.canvases?.[0]
+    if (c) {
+      found = {
+        index: -1,
+        selector,
+        framePath: path,
+        frameUrl: frame.url,
+        id: c.id,
+        className: c.className,
+        contextType: c.contextType,
+        width: c.width,
+        height: c.height,
+        rect: { x: c.rect.x + ox, y: c.rect.y + oy, width: c.rect.width, height: c.rect.height },
+        visible: c.visible,
+        activity: 0,
+        score: 0
+      }
+      return true
+    }
+    const children = frame.frames
+    const taken = new Set<number>()
+    for (const el of payload.iframes ?? []) {
+      const ci = matchChildFrameIndex(children, el, taken)
+      if (ci < 0) continue
+      taken.add(ci)
+      if (await walk(children[ci], ox + el.rect.x, oy + el.rect.y, `${path} › iframe[${el.domIndex}]`, depth + 1)) {
+        return true
+      }
+    }
+    return false
+  }
+
+  await walk(wc.mainFrame, 0, 0, TOP_PATH, 0)
+  return found
+}
+
+async function rectInFrame(
+  frame: WebFrameMain,
+  selector: string | null,
+  index: number,
+  ox: number,
+  oy: number
+): Promise<Rect | null> {
+  const selArg = selector ? JSON.stringify(selector) : 'null'
+  try {
+    const r = (await frame.executeJavaScript(
+      `(${rectProbe.toString()})(${selArg}, ${index})`
+    )) as Rect | null
+    if (!r) return null
+    return { x: r.x + ox, y: r.y + oy, width: r.width, height: r.height }
+  } catch {
+    return null
+  }
+}
+
+/**
+ * 解析当前所选 Canvas 在顶层视口中的最新 CSS 矩形（兼容窗口缩放与 iframe 布局变化）。
+ * - index 选择：依据探测缓存中的 framePath/选择器定位到对应 frame
+ * - selector 选择：顶层命中直接用；否则整树搜索
+ * - 缓存缺失时回退顶层旧行为（querySelectorAll('canvas')[index]）
+ */
+export async function resolveSelectionRect(
+  wc: WebContents,
+  selection: CanvasSelection,
+  cached: CanvasInfo[]
+): Promise<Rect | null> {
+  if (selection.kind === 'index') {
+    const info = cached.find((c) => c.index === selection.index)
+    if (info) {
+      if (info.framePath === TOP_PATH) return rectInFrame(wc.mainFrame, info.selector, -1, 0, 0)
+      const hit = await drillToFrame(wc.mainFrame, info.framePath, TOP_PATH, 0, 0, 0)
+      if (hit) return rectInFrame(hit.frame, info.selector, -1, hit.ox, hit.oy)
+      return null
+    }
+    return rectInFrame(wc.mainFrame, null, selection.index, 0, 0)
+  }
+
+  const top = await rectInFrame(wc.mainFrame, selection.selector, -1, 0, 0)
+  if (top) return top
+  // 跨 frame 搜索：按 probeBySelector 同样的路径定位后取 rect
+  const found = await probeBySelector(wc, selection.selector)
+  if (!found) return null
+  if (found.framePath === TOP_PATH) return rectInFrame(wc.mainFrame, selection.selector, -1, 0, 0)
+  const hit = await drillToFrame(wc.mainFrame, found.framePath, TOP_PATH, 0, 0, 0)
+  if (!hit) return null
+  return rectInFrame(hit.frame, selection.selector, -1, hit.ox, hit.oy)
 }
 
 /**

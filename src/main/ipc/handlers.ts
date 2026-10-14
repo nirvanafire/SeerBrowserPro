@@ -10,7 +10,9 @@ import type {
   AutomationConfig,
   CachedPage,
   CanvasSelection,
+  DetectResult,
   Detection,
+  GameModule,
   LogEntry,
   LogLevel,
   ModelManifest,
@@ -28,9 +30,11 @@ import type { ModuleStore } from '../cache/module-store'
 import { ModuleStore as ModuleStoreCtor } from '../cache/module-store'
 import { collectPageIdentity, dHash } from '../cache/page-signature'
 import { clearOverlay } from '../automation/overlay-injector'
+import { matchDetectionsToModules } from '../automation/matcher'
 import { performAction } from '../automation/human-input'
-import { center } from '../vision/coords'
+import { center, resolveModuleBox } from '../vision/coords'
 import { DatasetExporter } from '../annotate/dataset-export'
+import { openAnnotatorWindow } from '../browser/annotator-window'
 
 export interface Services {
   win: BrowserWindow
@@ -79,6 +83,30 @@ export function registerHandlers(s: Services): EventBus {
   }
   s.detect.onFrame = (r) => send(IPC.EvtDetect, r)
   s.detect.onLog = (level, msg) => bus.log(level, msg)
+  s.detect.enricher = async (r: DetectResult) => {
+    const tab = s.tabs.getActive()
+    if (!tab) return
+    try {
+      const identity = await collectPageIdentity(tab.view.webContents)
+      const matched = s.store.matchPage(identity)
+      if (!matched) return
+      r.pageId = matched.page.id
+      r.pageModules = matched.page.modules
+      const merged = matchDetectionsToModules(r.detections, matched.page.modules, false)
+      const map = new Map<Detection, GameModule>()
+      for (const p of merged.pairs) if (p.detection) map.set(p.detection, p.module)
+      for (const d of r.detections) {
+        const m = map.get(d)
+        if (m) {
+          d.moduleId = m.id
+          d.moduleLabel = m.label
+          d.moduleHits = m.hitCount
+        }
+      }
+    } catch {
+      /* 丰富化失败不影响检测主流程 */
+    }
+  }
   s.runner.onLog = (level, msg) => bus.log(level, msg)
   s.runner.onState = () => emitTask()
   s.runner.onCacheChanged = emitCache
@@ -207,6 +235,24 @@ export function registerHandlers(s: Services): EventBus {
     const c = center(det.css)
     bus.log('action', `手动点击检测目标「${det.label}」@(${Math.round(c.x)},${Math.round(c.y)})`)
     await performAction(tab.view.webContents, 'click', c.x, c.y, bounds.width, bounds.height)
+    return true
+  })
+
+  // 点击缓存功能点：优先 Canvas 归一化坐标还原（跨分辨率鲁棒）
+  ipcMain.handle(IPC.ActionClickModule, async (_e, payload: { pageId: string; moduleId: string }) => {
+    const page = s.store.loadPage(payload.pageId)
+    const mod = page?.modules.find((m) => m.id === payload.moduleId)
+    const sense = s.detect.lastSense
+    const bounds = s.tabs.getActiveBounds()
+    const tab = s.tabs.getActive()
+    if (!mod || !sense || !bounds || !tab) {
+      bus.log('warn', '无法点击功能点：请先执行一次检测（需要最新截图坐标系）')
+      return false
+    }
+    const box = resolveModuleBox(mod, sense.canvasRect, sense.cap.cssWidth, sense.cap.cssHeight)
+    const c = center(box)
+    bus.log('action', `手动点击功能点「${mod.label}」@(${Math.round(c.x)},${Math.round(c.y)})`)
+    await performAction(tab.view.webContents, mod.action, c.x, c.y, bounds.width, bounds.height)
     return true
   })
 
@@ -374,6 +420,9 @@ export function registerHandlers(s: Services): EventBus {
   ipcMain.handle(IPC.TaskState, () => s.runner.getState())
 
   // ---------- 标注 / 数据集 ----------
+  ipcMain.handle(IPC.AnnotatorOpen, () => {
+    openAnnotatorWindow(s.win)
+  })
   ipcMain.handle(
     IPC.AnnotateSave,
     (_e, payload: { dataUrl: string; cssWidth: number; cssHeight: number; boxes: AnnotationBox[] }) => {

@@ -385,6 +385,94 @@ textarea.json {
   font-size: 11px;
 }
 
+.badge.frame {
+  background: #2a2040;
+  color: #c8a0ff;
+  max-width: 160px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.badge.module {
+  background: #1a3a5f;
+  color: #9cc8ff;
+}
+
+.det-item.missed {
+  border-left-color: var(--yellow);
+  opacity: 0.8;
+}
+
+/* ---------- 标注工作台 ---------- */
+.workshop {
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg2);
+}
+.ws-toolbar {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg);
+  overflow-x: auto;
+}
+.ws-body {
+  flex: 1;
+  display: flex;
+  min-height: 0;
+  overflow: hidden;
+}
+.ws-stage {
+  flex: 1;
+  min-width: 0;
+  overflow: auto;
+  padding: 10px;
+  background: #080c15;
+}
+.ws-side {
+  width: 260px;
+  flex: 0 0 260px;
+  border-left: 1px solid var(--border);
+  background: var(--bg2);
+  padding: 10px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.ws-box-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px;
+  border-radius: 6px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  cursor: pointer;
+}
+.ws-box-row.selected {
+  border-color: var(--yellow);
+}
+.ws-box-row .name {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+}
+
+.annot-box.selected {
+  border-color: var(--yellow);
+}
+.annot-box.selected span {
+  background: var(--yellow);
+  color: #332500;
+}
+
 ::-webkit-scrollbar {
   width: 8px;
   height: 8px;

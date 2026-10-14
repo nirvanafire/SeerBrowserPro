@@ -51,12 +51,17 @@ export function CanvasPanel(): JSX.Element {
       {canvases.length === 0 && <p className="hint">当前页面未发现 Canvas，请先导航到游戏页面。</p>}
 
       {canvases.map((c) => (
-        <div key={c.selector} className={'card' + (isSelected(c) ? ' selected' : '')}>
+        <div key={c.framePath + '|' + c.selector} className={'card' + (isSelected(c) ? ' selected' : '')}>
           <div className="row">
             <span className={'badge ' + (c.contextType.startsWith('webgl') ? 'webgl' : c.contextType === 'unknown' ? 'unknown' : '')}>
               {c.contextType}
             </span>
             <b>{c.id || `canvas[${c.index}]`}</b>
+            {c.framePath !== 'top' && (
+              <span className="badge frame" title={c.frameUrl}>
+                {c.framePath}
+              </span>
+            )}
             {c.index === bestIndex && <span className="badge">最可能是游戏画布</span>}
             <span className="spacer" />
             <button

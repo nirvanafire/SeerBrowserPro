@@ -48,6 +48,8 @@ export const api = {
   stopLive: () => invoke<void>(IPC.DetectStop),
   clearOverlay: () => invoke<void>(IPC.OverlayClear),
   clickDetection: (index: number) => invoke<boolean>(IPC.ActionClickDetection, { index }),
+  clickModule: (pageId: string, moduleId: string) =>
+    invoke<boolean>(IPC.ActionClickModule, { pageId, moduleId }),
 
   // models
   listModels: () =>
@@ -79,6 +81,7 @@ export const api = {
   taskState: () => invoke<TaskState>(IPC.TaskState),
 
   // annotate
+  openAnnotator: () => invoke<void>(IPC.AnnotatorOpen),
   saveAnnotations: (frame: CaptureFrame, boxes: AnnotationBox[]) =>
     invoke<DatasetInfoType>(IPC.AnnotateSave, {
       dataUrl: frame.dataUrl,

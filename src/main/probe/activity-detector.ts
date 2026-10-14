@@ -61,11 +61,13 @@ export async function detectActiveCanvas(
 
   scored.sort((a, b) => b.score - a.score)
   // 恢复原始 index 顺序返回，但 bestIndex 指向评分最高者的原始 index
-  const bestSelector = scored[0]?.selector
+  // 注意：不同 frame 中的 canvas 可能有相同选择器，必须组合 framePath 匹配
+  const keyOf = (c: CanvasInfo): string => `${c.framePath}|${c.selector}`
+  const bestKey = scored[0] ? keyOf(scored[0]) : ''
   const ordered = canvases.map((orig) => {
-    const s = scored.find((x) => x.selector === orig.selector)
+    const s = scored.find((x) => keyOf(x) === keyOf(orig))
     return s ?? orig
   })
-  const bestIndex = ordered.findIndex((c) => c.selector === bestSelector)
+  const bestIndex = ordered.findIndex((c) => keyOf(c) === bestKey)
   return { canvases: ordered, bestIndex }
 }

@@ -33,7 +33,12 @@ export interface TabInfo {
 
 export interface CanvasInfo {
   index: number
+  /** Canvas 在其所在 document 内的 CSS 选择器 */
   selector: string
+  /** 所在 frame 路径：'top' 或 'top › iframe[2]' 等（含嵌套链） */
+  framePath: string
+  /** 所在 frame 的 URL */
+  frameUrl: string
   id: string
   className: string
   /** '2d' | 'webgl' | 'webgl2' | 'webgpu' | 'unknown' */
@@ -42,7 +47,7 @@ export interface CanvasInfo {
   width: number
   /** Canvas backing store 像素高 */
   height: number
-  /** 相对视口的 CSS 矩形 */
+  /** 相对顶层视口的 CSS 矩形（iframe 内 Canvas 已叠加祖先 iframe 偏移） */
   rect: Rect
   visible: boolean
   /** 双帧差分变化率 0~1 */
@@ -88,6 +93,12 @@ export interface Detection {
   canvasNorm: BBox | null
   /** 相对视口的归一化坐标（0~1，缓存使用） */
   viewportNorm: BBox
+  /** 命中的缓存功能点 id（未命中为 undefined） */
+  moduleId?: string
+  /** 命中的功能点名（= 模块 label） */
+  moduleLabel?: string
+  /** 功能点累计命中次数 */
+  moduleHits?: number
 }
 
 export interface DetectResult {
@@ -101,6 +112,10 @@ export interface DetectResult {
   cssHeight: number
   detections: Detection[]
   modelName?: string
+  /** 当前页缓存页 id（无匹配缓存时为 undefined） */
+  pageId?: string
+  /** 当前页已缓存的功能点清单（含本轮未命中的），供检测面板分组展示 */
+  pageModules?: GameModule[]
 }
 
 // ---------- 功能模块缓存 ----------

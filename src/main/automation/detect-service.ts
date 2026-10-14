@@ -8,6 +8,7 @@ import type { YoloEngine } from '../vision/yolo-engine'
 import type { ModelManager } from '../vision/model-manager'
 import { captureView, type CaptureOutput } from '../capture/capturer'
 import { bitmapToCss, cssToViewportNorm, cssToCanvasNorm, clampBox } from '../vision/coords'
+import { resolveSelectionRect } from '../probe/canvas-prober'
 import type { RawBitmap } from '../vision/preprocess'
 import { renderOverlay, clearOverlay } from './overlay-injector'
 
@@ -26,6 +27,8 @@ export class DetectService {
   private probeCacheByTab = new Map<string, CanvasInfo[]>()
   onFrame: ((r: DetectResult) => void) | null = null
   onLog: ((level: 'info' | 'warn' | 'error', msg: string) => void) | null = null
+  /** 检测结果丰富化钩子：由 IPC 层注入，把检测结果与缓存功能点匹配（填充 moduleId/pageModules） */
+  enricher: ((r: DetectResult) => Promise<void>) | null = null
   /** 最近一次感知结果（供"直接点击检测目标"等 IPC 使用） */
   lastSense: SenseOutput | null = null
 
@@ -52,20 +55,16 @@ export class DetectService {
     return this.selectionByTab.get(tabId) ?? null
   }
 
-  /** 轻量查询当前所选 Canvas 的最新 CSS 矩形（每次截图前调用，兼容窗口缩放） */
+  /** 轻量查询当前所选 Canvas 的最新 CSS 矩形（每次截图前调用，兼容窗口缩放与 iframe 布局变化） */
   private async resolveCanvasRect(tabId: string): Promise<Rect | null> {
     const sel = this.selectionByTab.get(tabId)
     const tab = this.tabs.get(tabId)
     if (!sel || !tab) return null
-    const code =
-      sel.kind === 'index'
-        ? `(() => { const c = document.querySelectorAll('canvas')[${sel.index}]; if (!c) return null; const r = c.getBoundingClientRect(); return {x:r.x,y:r.y,width:r.width,height:r.height}; })()`
-        : `(() => { const c = document.querySelector(${JSON.stringify(sel.selector)}); if (!c || c.tagName !== 'CANVAS') return null; const r = c.getBoundingClientRect(); return {x:r.x,y:r.y,width:r.width,height:r.height}; })()`
-    try {
-      return (await tab.view.webContents.executeJavaScript(code)) as Rect | null
-    } catch {
-      return null
-    }
+    return resolveSelectionRect(
+      tab.view.webContents,
+      sel,
+      this.probeCacheByTab.get(tabId) ?? []
+    )
   }
 
   private buildDetections(
@@ -121,13 +120,6 @@ export class DetectService {
     const detections = this.buildDetections(out.detections, cap, model.classes, canvasRect)
     const totalMs = performance.now() - t0
 
-    if (showOverlay) {
-      await renderOverlay(
-        wc,
-        detections.map((d) => ({ ...d.css, label: d.label, confidence: d.confidence, kind: 'detect' as const }))
-      )
-    }
-
     const result: DetectResult = {
       ok: true,
       inferenceMs: out.inferenceMs,
@@ -138,6 +130,26 @@ export class DetectService {
       cssHeight: cap.cssHeight,
       detections,
       modelName: model.name
+    }
+    // 功能点关联：命中缓存模块的检测框带上功能点名（覆盖层与面板同步显示）
+    if (this.enricher) {
+      try {
+        await this.enricher(result)
+      } catch {
+        /* 丰富化失败不影响检测主流程 */
+      }
+    }
+
+    if (showOverlay) {
+      await renderOverlay(
+        wc,
+        detections.map((d) => ({
+          ...d.css,
+          label: d.moduleLabel ?? d.label,
+          confidence: d.confidence,
+          kind: 'detect' as const
+        }))
+      )
     }
     const sense: SenseOutput = { result, bitmap: cap.bitmap, cap, canvasRect, detections }
     this.lastSense = sense
