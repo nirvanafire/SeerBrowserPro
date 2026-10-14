@@ -45,10 +45,10 @@ let win: BrowserWindow | null = null
 async function bootstrap(): Promise<void> {
   Menu.setApplicationMenu(null)
   win = new BrowserWindow({
-    width: 1400,
-    height: 880,
-    minWidth: 1080,
-    minHeight: 700,
+    width: 1600,
+    height: 960,
+    minWidth: 1280,
+    minHeight: 800,
     backgroundColor: '#0f1420',
     title: 'SeerBrowserPro',
     webPreferences: {
