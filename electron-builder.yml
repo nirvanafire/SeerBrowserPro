@@ -14,6 +14,10 @@ asarUnpack:
 extraResources:
   - from: resources
     to: resources
+  # python-bridge 打包态按 process.resourcesPath/python 查找脚本，
+  # 而脚本位于仓库根的 python/ 目录，必须显式拷入 resources/python
+  - from: python
+    to: python
 win:
   icon: build/icon.ico
   target:
