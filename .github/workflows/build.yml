@@ -39,15 +39,33 @@ jobs:
           # 全部位于 devDependencies，显式关闭 production 模式确保它们一定被安装
           NODE_ENV: ''
         run: |
+          Write-Host "=== 运行环境自证（用于确认 CI 跑的是哪个提交）==="
+          git rev-parse HEAD
+          node --version
+          npm --version
+          Write-Host "npm 生效配置：include=$(npm config get include)  omit=$(npm config get omit)"
+
           Write-Host "=== 清理残留 node_modules ==="
           if (Test-Path node_modules) { Remove-Item -Recurse -Force node_modules }
+
           Write-Host "=== npm ci（含 devDependencies）==="
           npm ci --include=dev --no-audit --no-fund
+          # pwsh 不会因外部命令非 0 退出而中止脚本，必须显式检查，
+          # 否则安装失败会被静默吞掉，直到 Verify/打包步骤才炸出误导性错误
+          if ($LASTEXITCODE -ne 0) {
+            Write-Warning "npm ci 失败（退出码=$LASTEXITCODE），回退到 npm install --include=dev"
+            npm install --include=dev --no-audit --no-fund
+            if ($LASTEXITCODE -ne 0) {
+              Write-Error "依赖安装彻底失败（npm ci 与 npm install 均非 0 退出）。"
+              exit 1
+            }
+          }
+
           Write-Host "=== 顶层依赖计数 ==="
           $dirs = @(Get-ChildItem node_modules -Directory)
           Write-Host "node_modules 一级目录数 = $($dirs.Count)"
           if ($dirs.Count -eq 0) {
-            Write-Error "npm ci 装完后 node_modules 为空：通常是 package.json 未声明依赖，或 package.json 与 package-lock.json 不一致。"
+            Write-Error "安装完成后 node_modules 为空：通常是 package.json 未声明依赖，或 package.json 与 package-lock.json 不一致。"
             exit 1
           }
 
@@ -92,7 +110,7 @@ jobs:
           if ($missing.Count -gt 0) {
             Write-Host "!!! devDependencies 安装不完整 !!!" -ForegroundColor Red
             $missing | ForEach-Object { Write-Host ("  " + $_) -ForegroundColor Red }
-            Write-Error "devDependencies 缺失：$($missing.Count) 项。请检查 runner 上是否有 NODE_ENV=production / NPM_CONFIG_PRODUCTION 等环境变量。"
+            Write-Error "devDependencies 缺失：$($missing.Count) 项。请核对：① package.json 是否声明了 devDependencies；② package.json 与 package-lock.json 是否同步；③ Install 步骤的 npm 安装日志是否有报错。"
             exit 1
           }
           Write-Host "devDependencies 校验通过 ✓" -ForegroundColor Green
