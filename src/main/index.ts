@@ -6,6 +6,7 @@ import { join } from 'node:path'
 import { mkdirSync } from 'node:fs'
 import { registerSchemePrivileged, registerProtocol } from './browser/protocol'
 import { TabManager } from './browser/tab-manager'
+import { CHROME_UA } from './browser/user-agent'
 import { ModelManager } from './vision/model-manager'
 import { YoloEngine } from './vision/yolo-engine'
 import { DetectService } from './automation/detect-service'
@@ -20,6 +21,11 @@ registerSchemePrivileged()
 // 统一回退 SwiftShader 软件渲染：capturePage 截图与 Canvas/WebGL 游戏仍可正常工作。
 // 必须在 app ready 之前调用。
 app.disableHardwareAcceleration()
+
+// 全局 UA 兜底：默认 UA 含 "Electron/x.y" 与 app 名，会触发站点的
+// "浏览器不兼容，请使用最新 Chrome" 拦截；统一伪装为标准 Chrome。
+// 标签页另有 webContents.setUserAgent + CDP Client Hints 覆盖（见 tab-manager）。
+app.userAgentFallback = CHROME_UA
 
 // 开发态把 userData 放到工程内（.userdata），避免受企业/沙箱对 %APPDATA% 的写入限制，
 // 同时让开发期的模型/缓存/数据集与正式安装版互不污染；打包后仍使用系统默认目录。

@@ -3,6 +3,7 @@
  * 活动标签作为子视图挂到主窗 contentView，非活动标签摘除但保留 WebContents。
  */
 import { BrowserWindow, WebContentsView } from 'electron'
+import { CHROME_UA, CHROME_UA_METADATA } from './user-agent'
 import { randomUUID } from 'node:crypto'
 import type { TabInfo } from '@shared/types'
 import { computeWebBounds, type ContentBounds } from './layout'
@@ -43,6 +44,9 @@ export class TabManager {
         spellcheck: false
       }
     })
+    // 在首次 loadURL 前伪装 UA：覆盖首个导航的 HTTP 请求头与 navigator.userAgent，
+    // 规避站点"浏览器不兼容，请使用最新 Chrome"的 UA 嗅探拦截
+    view.webContents.setUserAgent(CHROME_UA)
     const id = randomUUID().slice(0, 8)
     const tab: Tab = {
       id,
@@ -98,6 +102,17 @@ export class TabManager {
         })
       } catch (e) {
         console.warn('[page-hook] 脚本注入失败，将使用 getContext 回退探测:', String(e))
+      }
+      // Client Hints 覆盖：让 navigator.userAgentData 也报告为 Google Chrome。
+      // 独立于 page-hook 失败路径（setUserAgent 已覆盖 UA 字符串，此处仅增强元数据）。
+      try {
+        await wc.debugger.sendCommand('Network.enable')
+        await wc.debugger.sendCommand('Network.setUserAgentOverride', {
+          userAgent: CHROME_UA,
+          userAgentMetadata: CHROME_UA_METADATA
+        })
+      } catch (e) {
+        console.warn('[ua] Client Hints 覆盖失败（UA 字符串仍有效）:', String(e))
       }
     }
     wc.on('did-start-loading', () => {
