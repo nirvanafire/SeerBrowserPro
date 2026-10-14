@@ -1,0 +1,33 @@
+node_modules/
+out/
+dist/
+.vite/
+.userdata/
+*.log
+.DS_Store
+Thumbs.db
+
+# Python 缓存与虚拟环境
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+.env
+
+# 本地模型与数据集（体积大，不入库）
+models-local/
+dataset-local/
+datasets/
+runs/
+
+# 运行时临时产物
+*.onnx
+*.blockmap
+.tmp-*
+.trae/
+
+# IDE
+.idea/
+.vscode/settings.json
+*.code-workspace

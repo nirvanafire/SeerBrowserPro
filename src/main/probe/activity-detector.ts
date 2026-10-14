@@ -1,0 +1,71 @@
+/**
+ * 活动 Canvas 检测：间隔两次截图，对每个 canvas 的 CSS 区域做像素差分，
+ * 变化像素占比最高者即"正在渲染的游戏 Canvas"。
+ */
+import type { WebContents } from 'electron'
+import type { CanvasInfo } from '@shared/types'
+import { captureView, type CaptureOutput } from '../capture/capturer'
+import { cropCssRect } from '../capture/capturer'
+import { scoreCanvas } from './canvas-prober'
+
+const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms))
+
+/** 计算两张位图的变化像素比例（按 step 抽样，阈值判定） */
+export function diffRatio(a: Buffer, b: Buffer, step = 3, threshold = 24): number {
+  let changed = 0
+  let total = 0
+  const n = Math.min(a.length, b.length)
+  for (let i = 0; i < n; i += 4 * step) {
+    const dr = Math.abs(a[i] - b[i])
+    const dg = Math.abs(a[i + 1] - b[i + 1])
+    const db = Math.abs(a[i + 2] - b[i + 2])
+    if (dr + dg + db > threshold) changed++
+    total++
+  }
+  return total > 0 ? changed / total : 0
+}
+
+export interface ActivityResult {
+  canvases: CanvasInfo[]
+  bestIndex: number
+}
+
+/**
+ * @param intervalMs 两次截图间隔（游戏帧率相关，默认 350ms）
+ */
+export async function detectActiveCanvas(
+  wc: WebContents,
+  canvases: CanvasInfo[],
+  cssWidth: number,
+  cssHeight: number,
+  intervalMs = 350
+): Promise<ActivityResult> {
+  if (canvases.length === 0) return { canvases, bestIndex: -1 }
+
+  const first: CaptureOutput = await captureView(wc, cssWidth, cssHeight)
+  await sleep(intervalMs)
+  const second: CaptureOutput = await captureView(wc, cssWidth, cssHeight)
+
+  const scored = canvases.map((c) => {
+    if (!c.visible) return { ...c, activity: 0, score: 0 }
+    try {
+      const cropA = cropCssRect(first, c.rect)
+      const cropB = cropCssRect(second, c.rect)
+      const activity = diffRatio(cropA.data, cropB.data)
+      const withActivity = { ...c, activity }
+      return { ...withActivity, score: scoreCanvas(withActivity, cssWidth, cssHeight) }
+    } catch {
+      return { ...c, score: scoreCanvas(c, cssWidth, cssHeight) }
+    }
+  })
+
+  scored.sort((a, b) => b.score - a.score)
+  // 恢复原始 index 顺序返回，但 bestIndex 指向评分最高者的原始 index
+  const bestSelector = scored[0]?.selector
+  const ordered = canvases.map((orig) => {
+    const s = scored.find((x) => x.selector === orig.selector)
+    return s ?? orig
+  })
+  const bestIndex = ordered.findIndex((c) => c.selector === bestSelector)
+  return { canvases: ordered, bestIndex }
+}

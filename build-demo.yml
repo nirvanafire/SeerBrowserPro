@@ -1,0 +1,73 @@
+name: Build & Release
+
+# 仅在推送新标签时触发构建与发布
+on:
+  push:
+    tags:
+      - '*'
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        env:
+          ELECTRON_MIRROR: https://npmmirror.com/mirrors/electron/
+        run: npm install
+
+      - name: Build Windows executable
+        env:
+          ELECTRON_MIRROR: https://npmmirror.com/mirrors/electron/
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: npm run build
+
+      # 将安装包重命名为标签名称，便于在 Release 中直接识别版本
+      - name: Rename artifact to tag name
+        shell: pwsh
+        run: |
+          $tag = "${{ github.ref_name }}"
+          $exe = Get-ChildItem -Path dist -Filter "*.exe" | Select-Object -First 1
+          if ($exe) {
+            $newName = "SeerBrowser-$tag-Setup.exe"
+            Rename-Item -Path $exe.FullName -NewName $newName
+            Write-Host "Renamed to $newName"
+          } else {
+            Write-Host "No .exe found in dist"
+            exit 1
+          }
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: SeerBrowser-${{ github.ref_name }}
+          path: dist/*.exe
+          retention-days: 30
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: ${{ github.ref_name }}
+          body: |
+            知几浏览器 ${{ github.ref_name }}
+
+            下载下方安装包即可安装使用。
+
+            **注意**：需要系统已安装 Python 3.x 及 opencv-python、numpy、Pillow 依赖。
+          files: dist/*.exe
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

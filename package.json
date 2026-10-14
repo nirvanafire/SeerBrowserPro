@@ -1,0 +1,20 @@
+{
+  "name": "seer-browser-pro",
+  "version": "0.1.0",
+  "description": "基于 YOLO26 的 Canvas 网页游戏自动化浏览器",
+  "main": "out/main/index.js",
+  "author": "SeerBrowserPro",
+  "license": "MIT",
+  "private": true,
+  "scripts": {
+    "dev": "electron-vite dev",
+    "build": "electron-vite build",
+    "preview": "electron-vite preview",
+    "typecheck:node": "tsc --noEmit -p tsconfig.node.json --composite false",
+    "typecheck:web": "tsc --noEmit -p tsconfig.web.json --composite false",
+    "typecheck": "npm run typecheck:node && npm run typecheck:web",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "dist:win": "electron-vite build && electron-builder --win"
+  }
+}

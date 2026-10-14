@@ -1,0 +1,250 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Seer 模拟经营测试游戏</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { width: 100%; height: 100%; background: #0b101b; overflow: hidden; font-family: "Segoe UI", "Microsoft YaHei", sans-serif; }
+  #wrap { position: fixed; inset: 0; }
+  canvas { display: block; width: 100%; height: 100%; }
+  #hint {
+    position: fixed; right: 10px; bottom: 8px; color: #46557a; font-size: 12px;
+    pointer-events: none; user-select: none;
+  }
+</style>
+</head>
+<body>
+<div id="wrap"><canvas id="game"></canvas></div>
+<div id="hint">SeerBrowserPro 测试夹具：移动鼠标点金币/怪物；用于验证探测→识别→缓存→拟人点击链路</div>
+<script>
+(() => {
+  const canvas = document.getElementById('game')
+  const ctx = canvas.getContext('2d')
+  const W = 1280, H = 720
+  canvas.width = W
+  canvas.height = H
+
+  // ---------- 游戏状态 ----------
+  const state = {
+    screen: 'menu', // menu | play | dialog
+    score: 0,
+    coins: 0,
+    t: 0,
+    targets: [],
+    spawnIn: 60,
+    dialog: null,
+    lastClick: null
+  }
+
+  const UI = {
+    start:   { x: W / 2 - 140, y: 360, w: 280, h: 84, label: 'START 开始游戏' },
+    harvest: { x: 30, y: H - 96, w: 180, h: 64, label: 'HARVEST 收取' },
+    upgrade: { x: 230, y: H - 96, w: 180, h: 64, label: 'UPGRADE 升级' },
+    shop:    { x: 430, y: H - 96, w: 180, h: 64, label: 'SHOP 商店' },
+    dlgConfirm: { x: W / 2 - 150, y: H / 2 + 40, w: 140, h: 56, label: 'CONFIRM 确认' },
+    dlgClose:   { x: W / 2 + 10, y: H / 2 + 40, w: 140, h: 56, label: 'CLOSE 关闭' }
+  }
+
+  function spawn() {
+    const isCoin = Math.random() < 0.45
+    state.targets.push({
+      x: 120 + Math.random() * (W - 240),
+      y: 120 + Math.random() * (H - 320),
+      r: isCoin ? 26 : 32,
+      vx: (Math.random() - 0.5) * 2.4,
+      vy: (Math.random() - 0.5) * 2.4,
+      kind: isCoin ? 'coin' : 'enemy',
+      life: 600
+    })
+  }
+
+  function hit(px, py, r) {
+    return px >= r.x && px <= r.x + r.w && py >= r.y && py <= r.y + r.h
+  }
+
+  // 统一坐标入口：客户端(clientX/Y) -> canvas 内部坐标
+  function toGame(e) {
+    const rect = canvas.getBoundingClientRect()
+    return {
+      x: ((e.clientX - rect.left) / rect.width) * W,
+      y: ((e.clientY - rect.top) / rect.height) * H
+    }
+  }
+
+  canvas.addEventListener('pointerdown', (e) => {
+    const p = toGame(e)
+    state.lastClick = { x: p.x, y: p.y, until: state.t + 12 }
+
+    if (state.screen === 'menu') {
+      if (hit(p.x, p.y, UI.start)) {
+        state.screen = 'play'
+        state.score = 0
+        state.coins = 0
+      }
+      return
+    }
+    if (state.screen === 'dialog' && state.dialog) {
+      if (hit(p.x, p.y, UI.dlgConfirm)) {
+        state.coins += state.dialog.bonus
+        state.dialog = null
+        state.screen = 'play'
+      } else if (hit(p.x, p.y, UI.dlgClose)) {
+        state.dialog = null
+        state.screen = 'play'
+      }
+      return
+    }
+    // play
+    for (let i = state.targets.length - 1; i >= 0; i--) {
+      const t = state.targets[i]
+      if (Math.hypot(t.x - p.x, t.y - p.y) <= t.r + 6) {
+        if (t.kind === 'coin') { state.coins += 5; state.score += 5 }
+        else { state.score += 1 }
+        state.targets.splice(i, 1)
+        if (state.score > 0 && state.score % 15 === 0) {
+          state.screen = 'dialog'
+          state.dialog = { bonus: 20 }
+        }
+        return
+      }
+    }
+    if (hit(p.x, p.y, UI.harvest)) { state.coins += 2; state.score += 2 }
+    if (hit(p.x, p.y, UI.upgrade)) { state.coins = Math.max(0, state.coins - 5) }
+    if (hit(p.x, p.y, UI.shop)) {
+      state.screen = 'dialog'
+      state.dialog = { bonus: 10 }
+    }
+  })
+
+  // ---------- 渲染 ----------
+  function roundRect(x, y, w, h, r, fill, stroke) {
+    ctx.beginPath()
+    ctx.moveTo(x + r, y)
+    ctx.arcTo(x + w, y, x + w, y + h, r)
+    ctx.arcTo(x + w, y + h, x, y + h, r)
+    ctx.arcTo(x, y + h, x, y, r)
+    ctx.arcTo(x, y, x + w, y, r)
+    ctx.closePath()
+    if (fill) { ctx.fillStyle = fill; ctx.fill() }
+    if (stroke) { ctx.strokeStyle = stroke; ctx.lineWidth = 3; ctx.stroke() }
+  }
+  function button(r, color, textColor = '#fff') {
+    roundRect(r.x, r.y, r.w, r.h, 12, color, '#ffffff44')
+    ctx.fillStyle = textColor
+    ctx.font = 'bold 24px "Segoe UI", sans-serif'
+    ctx.textAlign = 'center'
+    ctx.textBaseline = 'middle'
+    ctx.fillText(r.label, r.x + r.w / 2, r.y + r.h / 2)
+  }
+
+  function frame() {
+    state.t++
+    ctx.clearRect(0, 0, W, H)
+    // 背景网格（证明持续渲染，活动差分可检出）
+    ctx.fillStyle = '#101a2e'
+    ctx.fillRect(0, 0, W, H)
+    ctx.strokeStyle = '#16233d'
+    ctx.lineWidth = 1
+    const ox = (state.t * 0.5) % 48
+    for (let x = -48 + ox; x < W; x += 48) {
+      ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, H); ctx.stroke()
+    }
+    for (let y = 0; y < H; y += 48) {
+      ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(W, y); ctx.stroke()
+    }
+
+    if (state.screen === 'menu') {
+      ctx.fillStyle = '#dbe7ff'
+      ctx.font = 'bold 56px "Segoe UI", sans-serif'
+      ctx.textAlign = 'center'
+      ctx.fillText('SEER FARM TYCOON', W / 2, 240)
+      ctx.fillStyle = '#7d8fb3'
+      ctx.font = '22px "Segoe UI", sans-serif'
+      ctx.fillText('Canvas 模拟经营 · SeerBrowserPro 自动化测试夹具', W / 2, 290)
+      const pulse = 0.85 + 0.15 * Math.sin(state.t / 10)
+      ctx.save()
+      ctx.translate(W / 2, UI.start.y + UI.start.h / 2)
+      ctx.scale(pulse, pulse)
+      ctx.translate(-W / 2, -(UI.start.y + UI.start.h / 2))
+      button(UI.start, '#2f7d3a')
+      ctx.restore()
+    } else {
+      // 目标
+      for (const t of state.targets) {
+        t.x += t.vx; t.y += t.vy; t.life--
+        if (t.x < 60 || t.x > W - 60) t.vx *= -1
+        if (t.y < 80 || t.y > H - 160) t.vy *= -1
+        if (t.kind === 'coin') {
+          ctx.beginPath(); ctx.arc(t.x, t.y, t.r, 0, Math.PI * 2)
+          ctx.fillStyle = '#f7b500'; ctx.fill()
+          ctx.strokeStyle = '#fff3c0'; ctx.lineWidth = 3; ctx.stroke()
+          ctx.fillStyle = '#5a4100'; ctx.font = 'bold 24px serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'
+          ctx.fillText('$', t.x, t.y + 1)
+        } else {
+          roundRect(t.x - t.r, t.y - t.r, t.r * 2, t.r * 2, 10, '#c0394b', '#ff9aa8')
+          ctx.fillStyle = '#fff'; ctx.font = '26px serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'
+          ctx.fillText('👾', t.x, t.y)
+        }
+      }
+      if (--state.spawnIn <= 0 && state.targets.length < 10) {
+        spawn()
+        state.spawnIn = 50 + Math.random() * 60
+      }
+
+      // HUD
+      ctx.textAlign = 'left'; ctx.textBaseline = 'alphabetic'
+      ctx.fillStyle = '#0d1626'; ctx.fillRect(0, 0, W, 64)
+      ctx.fillStyle = '#f7b500'; ctx.font = 'bold 26px "Segoe UI"'; ctx.fillText('$ ' + state.coins, 30, 42)
+      ctx.fillStyle = '#9cc8ff'; ctx.fillText('SCORE ' + state.score, 180, 42)
+
+      // 工具栏
+      button(UI.harvest, '#2b5e8f')
+      button(UI.upgrade, '#7a4fb0')
+      button(UI.shop, '#b06a2f')
+
+      // 弹窗
+      if (state.screen === 'dialog' && state.dialog) {
+        ctx.fillStyle = 'rgba(5,10,20,0.65)'; ctx.fillRect(0, 0, W, H)
+        roundRect(W / 2 - 260, H / 2 - 120, 520, 240, 16, '#1b2942', '#3d5680')
+        ctx.fillStyle = '#dbe7ff'; ctx.font = 'bold 30px "Segoe UI"'; ctx.textAlign = 'center'
+        ctx.fillText('REWARD 奖励领取', W / 2, H / 2 - 40)
+        ctx.fillStyle = '#f7b500'; ctx.font = '24px "Segoe UI"'
+        ctx.fillText('+' + state.dialog.bonus + ' coins', W / 2, H / 2 + 4)
+        button(UI.dlgConfirm, '#2f7d3a')
+        button(UI.dlgClose, '#8a3545')
+      }
+    }
+
+    // 点击反馈
+    if (state.lastClick && state.t < state.lastClick.until) {
+      ctx.beginPath()
+      ctx.arc(state.lastClick.x, state.lastClick.y, 12 + (12 - (state.lastClick.until - state.t)) * 2, 0, Math.PI * 2)
+      ctx.strokeStyle = '#ffffffaa'; ctx.lineWidth = 2; ctx.stroke()
+    }
+    requestAnimationFrame(frame)
+  }
+
+  // 自检钩子：仅供 SeerBrowserPro 自动化测试读取游戏状态
+  window.__seerGame = {
+    get screen() { return state.screen },
+    get score() { return state.score },
+    get coins() { return state.coins },
+    get targets() {
+      return state.targets.map((t) => ({
+        kind: t.kind,
+        x: t.x / W,
+        y: t.y / H,
+        r: t.r / W
+      }))
+    }
+  }
+
+  // 菜单也保持动画（开始按钮呼吸 + 网格滚动），活动差分应稳定识别本画布
+  spawn(); spawn(); spawn()
+  frame()
+})()
+</script>
+</body>
+</html>
