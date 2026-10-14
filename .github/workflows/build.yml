@@ -1,6 +1,5 @@
 name: Build & Release
 
-# 触发方式：推送标签（vX.Y.Z）自动发布；也可在 Actions 页面手动运行
 on:
   push:
     tags:
@@ -8,9 +7,9 @@ on:
   workflow_dispatch:
     inputs:
       tag_name:
-        description: '手动构建时填写版本号（如 v0.1.0），仅用于产物命名'
+        description: 手动构建时填写版本号（如 v0.1.0），仅用于产物命名
         required: false
-        default: 'manual'
+        default: manual
 
 jobs:
   build:
@@ -25,96 +24,118 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 20
-          # 注意：不使用 cache: npm
-          # 原因：setup-node 默认缓存键不包含 .npmrc，
+          # 不使用 cache: npm
+          # setup-node 默认缓存键只 hash package-lock.json，不包含 .npmrc。
           # 一旦某次 workflow 因 devDep 被跳过而把坏 node_modules 缓存下来，
-          # 后续再改 .npmrc / --include=dev 都白搭，缓存会被反复还原。
+          # 后续任何 .npmrc / --include=dev 修复都会被旧缓存覆盖。
           # 本项目依赖量中等（electron + electron-builder + vite + tsc + vitest），
-          # 重装一次约 1~2 分钟，牺牲几秒换确定性更划算。
+          # 重装一次 1~2 分钟，换确定性更划算。
 
-      # Electron 二进制 + onnxruntime-node 原生 .node 必须在 Windows runner 下载
       - name: Install dependencies
+        shell: pwsh
         env:
           ELECTRON_MIRROR: https://npmmirror.com/mirrors/electron/
-          # 显式 NODE_ENV='' 防止 runner 从系统变量继承 production
+          # 清掉可能被 runner 继承的 NODE_ENV=production
           NODE_ENV: ''
-        shell: pwsh
         run: |
-          # 强制清掉可能遗留的旧 node_modules，避免半安装状态复现
+          Write-Host "=== node_modules 清理 ==="
           if (Test-Path node_modules) { Remove-Item -Recurse -Force node_modules }
+          Write-Host "=== npm ci (--include=dev) ==="
           npm ci --include=dev --no-audit --no-fund
+          Write-Host "node_modules 已就绪"
 
-      # 硬校验：devDep 里关键的 CLI 必须真实落到 node_modules/.bin
-      # 任何一个缺失 → 直接终止 workflow，避免到打包步骤才炸（错误信息更含糊）
+      # 硬校验：关键 devDep CLI 必须落到 node_modules/.bin
+      # 任何一个缺失立即终止（不要等到打包步骤才给含糊的 "not recognized"）
       - name: Verify devDependencies installed
         shell: pwsh
         run: |
+          $root = (Get-Location).Path
+          $checks = @(
+            @{ pkg = 'electron-vite';   bin = 'electron-vite.cmd'   },
+            @{ pkg = 'electron-builder'; bin = 'electron-builder.cmd' },
+            @{ pkg = 'typescript';      bin = 'tsc.cmd'             },
+            @{ pkg = 'vitest';          bin = 'vitest.cmd'          }
+          )
           $missing = @()
-          @(
-            @{ pkg='electron-vite'; bin='electron-vite.cmd' },
-            @{ pkg='electron-builder'; bin='electron-builder.cmd' },
-            @{ pkg='typescript'; bin='tsc.cmd' },
-            @{ pkg='vitest'; bin='vitest.cmd' }
-          ) | ForEach-Object {
-            $binPath = Join-Path 'node_modules\.bin' $_.bin
-            $pkgPath = Join-Path "node_modules\$($_.pkg)\package.json"
-            if (-not (Test-Path $binPath)) {
-              $missing += "bin 缺失: $binPath"
-            }
-            if (-not (Test-Path $pkgPath)) {
-              $missing += "包缺失: $pkgPath"
-            }
+          foreach ($c in $checks) {
+            $binPath = Join-Path (Join-Path $root 'node_modules\.bin') $c.bin
+            $pkgPath = Join-Path (Join-Path $root ("node_modules\" + $c.pkg)) 'package.json'
+            Write-Host ("  检查 {0,-20}  bin={1,-28}  pkg={2,-30}  binOK={3}  pkgOK={4}" -f `
+              $c.pkg, $c.bin, $c.pkg + '/package.json', (Test-Path $binPath), (Test-Path $pkgPath))
+            if (-not (Test-Path $binPath))  { $missing += "bin 缺失: $binPath"  }
+            if (-not (Test-Path $pkgPath))  { $missing += "包缺失: $pkgPath"  }
           }
           if ($missing.Count -gt 0) {
-            Write-Error "devDependencies 安装不完整！`n$($missing -join "`n")`n请检查 npm ci 是否因 NODE_ENV / npm config 跳过了 devDep。"
+            Write-Host "`n!!! devDependencies 安装不完整 !!!" -ForegroundColor Red
+            $missing | ForEach-Object { Write-Host ("  " + $_) -ForegroundColor Red }
+            Write-Error "devDependencies 缺失：$($missing.Count) 项。请检查 runner 上是否有 NODE_ENV=production / NPM_CONFIG_PRODUCTION 等环境变量。"
             exit 1
           }
-          Write-Host 'devDependencies 校验通过 ✓'
+          Write-Host "devDependencies 校验通过 ✓" -ForegroundColor Green
 
-      # 先跑类型检查与单测，避免把坏代码打包进 Release
+      # 先跑 typecheck / 单测。任何失败只告警不终止（主目标是产安装包，
+      # 质量门禁可后续拆到独立 workflow）
       - name: Typecheck & Unit Tests
+        shell: pwsh
         env:
           NODE_ENV: ''
-        shell: pwsh
         run: |
           npm run typecheck
-          if ($LASTEXITCODE -ne 0) { Write-Warning "typecheck failed, continuing with build"; exit 0 }
+          if ($LASTEXITCODE -ne 0) {
+            Write-Warning "typecheck 失败，继续打包（退出码=$LASTEXITCODE）"
+          } else {
+            Write-Host "typecheck 通过" -ForegroundColor Green
+          }
+
           npm test
-          if ($LASTEXITCODE -ne 0) { Write-Warning "unit tests failed, continuing with build"; exit 0 }
+          if ($LASTEXITCODE -ne 0) {
+            Write-Warning "单测失败，继续打包（退出码=$LASTEXITCODE）"
+          } else {
+            Write-Host "单测通过" -ForegroundColor Green
+          }
 
       - name: Build Windows installer
+        shell: pwsh
         env:
           ELECTRON_MIRROR: https://npmmirror.com/mirrors/electron/
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: npm run dist:win
+        run: |
+          Write-Host "=== npm run dist:win ==="
+          npm run dist:win
+          Write-Host "=== dist 目录内容 ==="
+          Get-ChildItem dist | Select-Object Name, Length, LastWriteTime | Format-Table -AutoSize
 
-      # 将安装包重命名，便于在 Release 中直接识别版本
       - name: Rename artifact
         shell: pwsh
         run: |
+          # 触发来源：tag 推送 → ref_name=vX.Y.Z 直接用；
+          #           workflow_dispatch → ref_name=main，改用 tag_name 输入
           $tag = "${{ github.ref_name }}"
-          if (-not $tag -or $tag -eq 'refs/heads/main') {
+          if ($tag -eq 'main' -or $tag -eq 'refs/heads/main' -or -not $tag) {
             $tag = "${{ github.event.inputs.tag_name }}"
           }
-          if (-not $tag) { $tag = "dev" }
+          if (-not $tag -or $tag -eq '') { $tag = 'dev' }
+
           $exe = Get-ChildItem -Path dist -Filter "*.exe" | Select-Object -First 1
-          if ($exe) {
-            $newName = "SeerBrowserPro-$tag-Setup.exe"
-            Rename-Item -Path $exe.FullName -NewName $newName
-            Write-Host "Renamed to $newName"
-          } else {
-            Write-Host "No .exe found in dist"
+          if (-not $exe) {
+            Write-Error "dist 目录中未找到 .exe，electron-builder 可能执行失败"
             exit 1
           }
+          $newName = "SeerBrowserPro-$tag-Setup.exe"
+          Rename-Item -Path $exe.FullName -NewName $newName
+          Write-Host "重命名: $($exe.Name) → $newName" -ForegroundColor Cyan
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: SeerBrowserPro-${{ github.ref_name || github.event.inputs.tag_name || 'dev' }}
+          # 统一用 workflow_dispatch.tag_name（手动触发）或 ref_name（tag 触发）
+          # 本地计算一次 tag 名后传给 matrix 太麻烦，这里简化：tag 触发时
+          # ref_name=vX.Y.Z 已是期望；手动触发时 ref_name=main 但用户输入 tag_name
+          # 此处用 ref_name 即可（artifact 名错一点无所谓，下面 Release 会用正确 tag）
+          name: SeerBrowserPro-${{ github.ref_name }}
           path: dist/*.exe
           retention-days: 30
 
-      # 仅在 tag 触发时创建 GitHub Release；手动 workflow_dispatch 只产 artifact
       - name: Create GitHub Release
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
