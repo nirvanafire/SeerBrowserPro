@@ -46,8 +46,14 @@ function sampleBilinear(bm: RawBitmap, fx: number, fy: number): [number, number,
  * @param bm 原始 RGBA 位图
  * @param size 模型输入边长（通常 640）
  * @param fill 填充色（YOLO 惯例 114）
+ * @param out 可选复用的输出缓冲（长度须为 3*size*size），避免连续推理时反复分配大数组
  */
-export function letterboxToNCHW(bm: RawBitmap, size = 640, fill = 114): LetterboxResult {
+export function letterboxToNCHW(
+  bm: RawBitmap,
+  size = 640,
+  fill = 114,
+  out?: Float32Array
+): LetterboxResult {
   const gain = Math.min(size / bm.width, size / bm.height)
   const resizedW = Math.round(bm.width * gain)
   const resizedH = Math.round(bm.height * gain)
@@ -55,7 +61,8 @@ export function letterboxToNCHW(bm: RawBitmap, size = 640, fill = 114): Letterbo
   const padY = Math.floor((size - resizedH) / 2)
 
   const planeSize = size * size
-  const tensorData = new Float32Array(3 * planeSize)
+  const tensorData =
+    out && out.length === 3 * planeSize ? out : new Float32Array(3 * planeSize)
   // 先铺灰边
   const fillNorm = fill / 255
   tensorData.fill(fillNorm)

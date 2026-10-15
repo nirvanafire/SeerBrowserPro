@@ -5,6 +5,7 @@
  * - 输出：bitmap 物理像素坐标系下的检测结果
  */
 import * as ort from 'onnxruntime-node'
+import * as os from 'node:os'
 import type { ModelManifest } from '@shared/types'
 import { letterboxToNCHW, type RawBitmap } from './preprocess'
 import {
@@ -15,6 +16,37 @@ import {
   type RawDetection
 } from './postprocess'
 import { inverseLetterbox, clampBox } from './coords'
+
+/** 限制 ONNX 线程池规模：默认会占满全部物理核，推理时造成整机 CPU 尖峰 */
+const ORT_THREADS = Math.max(1, Math.min(4, os.availableParallelism()))
+
+/** 空闲自动卸载时长：模型会话常驻占用数百 MB 内存，闲置后释放、再次检测时自动重载 */
+const IDLE_UNLOAD_MS = 5 * 60 * 1000
+
+/**
+ * 推理输入缓冲池（双槽）：连续检测时避免每帧分配 ~6MB Float32Array 造成的 GC 压力。
+ * 槽被占用（并发推理）时回退新分配，保证正确性。
+ */
+class TensorBufferPool {
+  private slots: Array<{ buf: Float32Array; busy: boolean }> = []
+
+  acquire(size: number): Float32Array {
+    const n = 3 * size * size
+    for (const s of this.slots) {
+      if (!s.busy && s.buf.length === n) {
+        s.busy = true
+        return s.buf
+      }
+    }
+    const buf = new Float32Array(n)
+    this.slots.push({ buf, busy: true })
+    return buf
+  }
+
+  release(buf: Float32Array): void {
+    for (const s of this.slots) if (s.buf === buf) s.busy = false
+  }
+}
 
 export interface InferOptions {
   confThreshold?: number
@@ -38,16 +70,33 @@ export interface InferOutput {
 export class YoloEngine {
   private session: ort.InferenceSession | null = null
   private manifest: ModelManifest | null = null
+  private idleTimer: NodeJS.Timeout | null = null
+  private pool = new TensorBufferPool()
+  /** 空闲卸载回调（由 IPC 层注入，用于输出日志） */
+  onIdleUnload: ((manifest: ModelManifest) => void) | null = null
 
   async load(manifest: ModelManifest): Promise<{ providers: string[] }> {
     // CPU 优先（onnxruntime-node npm 包默认仅内置 CPU EP），失败时给出清晰错误
     const session = await ort.InferenceSession.create(manifest.onnxPath, {
       executionProviders: ['cpu'],
-      graphOptimizationLevel: 'all'
+      graphOptimizationLevel: 'all',
+      intraOpNumThreads: ORT_THREADS
     })
     this.session = session
     this.manifest = manifest
+    this.armIdleUnload()
     return { providers: session.inputNames ? ['cpu'] : ['cpu'] }
+  }
+
+  /** 每次推理后重置空闲计时；闲置超时后释放会话（下次检测自动重载） */
+  private armIdleUnload(): void {
+    if (this.idleTimer) clearTimeout(this.idleTimer)
+    this.idleTimer = setTimeout(() => {
+      const m = this.manifest
+      this.dispose()
+      if (m) this.onIdleUnload?.(m)
+    }, IDLE_UNLOAD_MS)
+    this.idleTimer.unref?.()
   }
 
   isLoaded(): boolean {
@@ -67,12 +116,19 @@ export class YoloEngine {
     const iou = opts.iouThreshold ?? this.manifest.iouThreshold
     const size = this.manifest.inputSize
 
-    const lb = letterboxToNCHW(bm, size)
+    const lb = letterboxToNCHW(bm, size, 114, this.pool.acquire(size))
     const t1 = performance.now()
 
     const inputName = this.session.inputNames[0]
     const tensor = new ort.Tensor('float32', lb.tensorData, [1, 3, size, size])
-    const outputs = await this.session.run({ [inputName]: tensor })
+    let outputs: Record<string, ort.Tensor>
+    try {
+      outputs = await this.session.run({ [inputName]: tensor })
+    } finally {
+      // ORT 在构造 Tensor 时已拷贝数据，推理结束后即可归还缓冲
+      this.pool.release(lb.tensorData)
+    }
+    this.armIdleUnload()
     const t2 = performance.now()
 
     const outputName = this.session.outputNames[0]
@@ -125,6 +181,10 @@ export class YoloEngine {
   }
 
   dispose(): void {
+    if (this.idleTimer) {
+      clearTimeout(this.idleTimer)
+      this.idleTimer = null
+    }
     this.session = null
     this.manifest = null
   }

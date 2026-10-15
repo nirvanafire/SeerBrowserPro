@@ -9,8 +9,11 @@ import { TaskPanel } from './components/TaskPanel'
 import { Annotator } from './components/Annotator'
 import { AnnotatorEntry } from './components/AnnotatorEntry'
 import { LogPanel } from './components/LogPanel'
+import { LogOverlay } from './components/LogOverlay'
+import { HelpPanel } from './components/HelpPanel'
 
 const NAV: Array<{ key: ReturnType<typeof useStore.getState>['panel']; label: string }> = [
+  { key: 'help', label: '帮助' },
   { key: 'canvas', label: '画布' },
   { key: 'detect', label: '检测' },
   { key: 'model', label: '模型' },
@@ -22,6 +25,8 @@ const NAV: Array<{ key: ReturnType<typeof useStore.getState>['panel']; label: st
 
 /** 独立标注工作台窗口（annotator-window.ts 以 hash='#annotator' 加载本入口） */
 const IS_ANNOTATOR = window.location.hash.replace(/^#\/?/, '') === 'annotator'
+/** 悬浮日志窗口（log-window.ts 以 hash='#logs' 加载本入口） */
+const IS_LOG_OVERLAY = window.location.hash.replace(/^#\/?/, '') === 'logs'
 
 export default function App(): JSX.Element {
   const panel = useStore((s) => s.panel)
@@ -30,6 +35,11 @@ export default function App(): JSX.Element {
   const ready = useStore((s) => s.ready)
 
   useEffect(() => init(), [init])
+
+  if (IS_LOG_OVERLAY) {
+    // 悬浮日志窗口：整页只渲染日志视图
+    return <LogOverlay />
+  }
 
   if (IS_ANNOTATOR) {
     // 工作台窗口不需要标签栏/侧栏状态，直接整页渲染
@@ -54,6 +64,7 @@ export default function App(): JSX.Element {
           </div>
           {ready && (
             <>
+              {panel === 'help' && <HelpPanel />}
               {panel === 'canvas' && <CanvasPanel />}
               {panel === 'detect' && <DetectPanel />}
               {panel === 'model' && <ModelPanel />}

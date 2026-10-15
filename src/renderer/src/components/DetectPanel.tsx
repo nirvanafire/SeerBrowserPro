@@ -78,6 +78,19 @@ export function DetectPanel(): JSX.Element {
     }
   }
 
+  // 智能找功能：无需模型，基于双帧画面变化发现动态区域（结果经 EvtDetect 推回面板）
+  const findFeatures = async (): Promise<void> => {
+    setBusy(true)
+    setError('')
+    try {
+      await api.detectFeatures()
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    } finally {
+      setBusy(false)
+    }
+  }
+
   const toggleLive = async (): Promise<void> => {
     if (live) {
       await api.stopLive()
@@ -105,11 +118,14 @@ export function DetectPanel(): JSX.Element {
       <h3>实时检测</h3>
       <p className="hint">
         当前模型：<b>{activeModel?.name ?? '未选择'}</b>（{activeModel?.classes.length ?? 0} 类）。
-        检测结果自动与当前页的缓存功能点匹配，命中后按功能点操作。
+        没有模型可先用「智能找功能」发现页面动态功能；结果会自动与当前页的缓存功能点匹配。
       </p>
       <div className="row">
         <button className="primary" disabled={busy || live} onClick={() => void once()}>
           {busy ? '推理中…' : '单次推理'}
+        </button>
+        <button disabled={busy || live} onClick={() => void findFeatures()}>
+          智能找功能
         </button>
         <button onClick={() => void toggleLive()}>{live ? '■ 停止连续检测' : '▶ 连续检测'}</button>
         <button onClick={() => void api.clearOverlay()}>清除框层</button>

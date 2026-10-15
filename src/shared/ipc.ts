@@ -14,6 +14,9 @@ export const IPC = {
   TabReload: 'tab:reload',
   TabStop: 'tab:stop',
 
+  // 布局（渲染层通知主进程调整网页视图区域）
+  LayoutTopBar: 'layout:topbar',
+
   // Canvas 探测
   ProbeCanvas: 'probe:canvas',
   ProbeSelect: 'probe:select',
@@ -22,6 +25,7 @@ export const IPC = {
   // 截图 / 推理
   CaptureFrame: 'capture:frame',
   DetectOnce: 'detect:once',
+  DetectFeatures: 'detect:features',
   DetectStart: 'detect:start',
   DetectStop: 'detect:stop',
   OverlayClear: 'overlay:clear',
@@ -58,6 +62,7 @@ export const IPC = {
 
   // 日志
   LogList: 'log:list',
+  LogWindowToggle: 'log:toggle',
 
   // 事件推送
   EvtTabs: 'evt:tabs',
@@ -66,7 +71,8 @@ export const IPC = {
   EvtModels: 'evt:models',
   EvtCache: 'evt:cache',
   EvtTask: 'evt:task',
-  EvtPythonLog: 'evt:python-log'
+  EvtPythonLog: 'evt:python-log',
+  EvtProbe: 'evt:probe'
 } as const
 
 export type IpcChannel = (typeof IPC)[keyof typeof IPC]

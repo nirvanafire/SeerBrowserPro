@@ -107,6 +107,14 @@ input[type='range'] {
   display: flex;
   flex-direction: column;
 }
+/* 单页模式：隐藏标签栏，只保留 46px 地址栏行（高度须与主进程 layout.ts 契约一致） */
+.topbar.no-tabs {
+  height: 46px;
+  flex: 0 0 46px;
+}
+.topbar.no-tabs .navrow {
+  height: 100%;
+}
 
 .tabstrip {
   height: 38px;
@@ -471,6 +479,59 @@ textarea.json {
 .annot-box.selected span {
   background: var(--yellow);
   color: #332500;
+}
+
+/* ---------- 帮助面板 ---------- */
+.help-steps {
+  margin: 6px 0 0 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  line-height: 1.6;
+}
+.help-steps li b {
+  color: var(--accent);
+}
+.help-steps .tiny {
+  margin: 0 4px;
+}
+
+/* ---------- 悬浮日志窗口 ---------- */
+.floatlog {
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  background: #0b101b;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+}
+.floatlog-head {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px;
+  background: var(--bg2);
+  border-bottom: 1px solid var(--border);
+  /* 无边框窗口拖拽区 */
+  -webkit-app-region: drag;
+}
+.floatlog-head .t {
+  font-size: 12px;
+  color: var(--muted);
+}
+.floatlog-head .spacer {
+  flex: 1;
+}
+.floatlog-head button {
+  -webkit-app-region: no-drag;
+}
+.floatlog-body {
+  flex: 1;
+  border: none;
+  border-radius: 0;
+  min-height: 0;
 }
 
 ::-webkit-scrollbar {

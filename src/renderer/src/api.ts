@@ -31,6 +31,7 @@ export const api = {
   forward: () => invoke<void>(IPC.TabForward),
   reload: () => invoke<void>(IPC.TabReload),
   stop: () => invoke<void>(IPC.TabStop),
+  setTopBarHeight: (h: number) => invoke<void>(IPC.LayoutTopBar, { height: h }),
 
   // probe
   probeCanvases: () =>
@@ -44,6 +45,7 @@ export const api = {
   // detect
   captureFrame: () => invoke<CaptureFrame>(IPC.CaptureFrame),
   detectOnce: () => invoke<DetectResult>(IPC.DetectOnce),
+  detectFeatures: () => invoke<DetectResult>(IPC.DetectFeatures),
   startLive: (intervalMs: number) => invoke<void>(IPC.DetectStart, { intervalMs }),
   stopLive: () => invoke<void>(IPC.DetectStop),
   clearOverlay: () => invoke<void>(IPC.OverlayClear),
@@ -95,6 +97,7 @@ export const api = {
 
   // logs
   listLogs: () => invoke<LogEntry[]>(IPC.LogList),
+  toggleLogWindow: () => invoke<boolean>(IPC.LogWindowToggle),
 
   // events
   on: window.seer.on

@@ -7,6 +7,8 @@ export function BrowserChrome(): JSX.Element {
   const activeTabId = useStore((s) => s.activeTabId)
   const urlDraft = useStore((s) => s.urlDraft)
   const setUrlDraft = useStore((s) => s.setUrlDraft)
+  const tabsHidden = useStore((s) => s.tabsHidden)
+  const toggleTabsHidden = useStore((s) => s.toggleTabsHidden)
 
   const active = tabs.find((t) => t.id === activeTabId) ?? tabs[tabs.length - 1]
 
@@ -15,32 +17,34 @@ export function BrowserChrome(): JSX.Element {
   }
 
   return (
-    <div className="topbar">
-      <div className="tabstrip">
-        {tabs.map((t) => (
-          <div
-            key={t.id}
-            className={'tab' + (t.id === active?.id ? ' active' : '')}
-            onClick={() => void api.activateTab(t.id)}
-            title={t.url}
-          >
-            {t.loading && <span className="dot" />}
-            <span className="title">{t.title || '未命名'}</span>
-            <button
-              className="close"
-              onClick={(e) => {
-                e.stopPropagation()
-                void api.closeTab(t.id)
-              }}
+    <div className={'topbar' + (tabsHidden ? ' no-tabs' : '')}>
+      {!tabsHidden && (
+        <div className="tabstrip">
+          {tabs.map((t) => (
+            <div
+              key={t.id}
+              className={'tab' + (t.id === active?.id ? ' active' : '')}
+              onClick={() => void api.activateTab(t.id)}
+              title={t.url}
             >
-              ×
-            </button>
-          </div>
-        ))}
-        <button className="add" title="新建标签" onClick={() => void api.createTab()}>
-          ＋
-        </button>
-      </div>
+              {t.loading && <span className="dot" />}
+              <span className="title">{t.title || '未命名'}</span>
+              <button
+                className="close"
+                onClick={(e) => {
+                  e.stopPropagation()
+                  void api.closeTab(t.id)
+                }}
+              >
+                ×
+              </button>
+            </div>
+          ))}
+          <button className="add" title="新建标签" onClick={() => void api.createTab()}>
+            ＋
+          </button>
+        </div>
+      )}
       <div className="navrow">
         <button className="navbtn" title="后退" onClick={() => void api.back()}>
           ←
@@ -64,6 +68,20 @@ export function BrowserChrome(): JSX.Element {
             if (e.key === 'Enter') go()
           }}
         />
+        <button
+          className="navbtn"
+          title={tabsHidden ? '显示标签栏' : '隐藏标签栏（单页模式，网页区域更大）'}
+          onClick={toggleTabsHidden}
+        >
+          {tabsHidden ? '▤' : '▥'}
+        </button>
+        <button
+          className="navbtn"
+          title="悬浮日志（置顶小窗，测试时实时查看输出）"
+          onClick={() => void api.toggleLogWindow()}
+        >
+          ☰
+        </button>
       </div>
     </div>
   )

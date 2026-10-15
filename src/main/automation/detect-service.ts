@@ -9,10 +9,19 @@ import type { ModelManager } from '../vision/model-manager'
 import { captureView, type CaptureOutput } from '../capture/capturer'
 import { bitmapToCss, cssToViewportNorm, cssToCanvasNorm, clampBox } from '../vision/coords'
 import { resolveSelectionRect } from '../probe/canvas-prober'
+import { detectMotionRegions } from '../vision/motion-detector'
 import type { RawBitmap } from '../vision/preprocess'
 import { renderOverlay, clearOverlay } from './overlay-injector'
 
+/** 运动区域检测结果的统一类别 id（与模型类别空间隔离，功能点匹配同样按 -1 匹配） */
+export const MOTION_CLASS_ID = -1
+export const MOTION_LABEL = '动态功能'
+/** 智能找功能两次采样间隔（毫秒） */
+const MOTION_GAP_MS = 350
+
 export interface SenseOutput {
+  /** 产生本次结果的标签页（点击动作前校验，防止切换标签后点错坐标） */
+  tabId: string
   result: DetectResult
   bitmap: RawBitmap
   cap: CaptureOutput
@@ -53,6 +62,12 @@ export class DetectService {
 
   getSelection(tabId: string): CanvasSelection | null {
     return this.selectionByTab.get(tabId) ?? null
+  }
+
+  /** 标签关闭/导航到新文档时清理该标签的选区与探测缓存，防止陈旧状态串页 */
+  removeTab(tabId: string): void {
+    this.selectionByTab.delete(tabId)
+    this.probeCacheByTab.delete(tabId)
   }
 
   /** 轻量查询当前所选 Canvas 的最新 CSS 矩形（每次截图前调用，兼容窗口缩放与 iframe 布局变化） */
@@ -151,7 +166,7 @@ export class DetectService {
         }))
       )
     }
-    const sense: SenseOutput = { result, bitmap: cap.bitmap, cap, canvasRect, detections }
+    const sense: SenseOutput = { tabId: tab.id, result, bitmap: cap.bitmap, cap, canvasRect, detections }
     this.lastSense = sense
     return sense
   }
@@ -161,11 +176,80 @@ export class DetectService {
     return s.result
   }
 
+  /**
+   * 智能找功能（无需模型）：双帧差分找出页面上的动态区域，
+   * 结果与模型检测同构（可存为功能点、可直接点击）。
+   */
+  async detectFeatures(showOverlay = true): Promise<SenseOutput> {
+    const tab = this.tabs.getActive()
+    const t0 = performance.now()
+    if (!tab) throw new Error('没有活动标签页')
+    const bounds = this.tabs.getActiveBounds()
+    if (!bounds) throw new Error('标签视图未布局')
+
+    const wc = tab.view.webContents
+    const capA = await captureView(wc, bounds.width, bounds.height)
+    await new Promise<void>((r) => setTimeout(r, MOTION_GAP_MS))
+    const capB = await captureView(wc, bounds.width, bounds.height)
+    const canvasRect = await this.resolveCanvasRect(tab.id)
+
+    const t1 = performance.now()
+    const regions = detectMotionRegions(capA.bitmap, capB.bitmap, { maxBoxes: 12 })
+    const detections: Detection[] = regions.map((rg) => {
+      const css = clampBox(bitmapToCss(rg.box, capB.scale), 0, 0, capB.cssWidth, capB.cssHeight)
+      return {
+        classId: MOTION_CLASS_ID,
+        label: MOTION_LABEL,
+        confidence: rg.score,
+        bitmap: rg.box,
+        css,
+        viewportNorm: cssToViewportNorm(css, capB.cssWidth, capB.cssHeight),
+        canvasNorm: canvasRect ? cssToCanvasNorm(css, canvasRect) : null
+      }
+    })
+    const totalMs = performance.now() - t0
+
+    const result: DetectResult = {
+      ok: true,
+      inferenceMs: t1 - t0,
+      totalMs,
+      bitmapWidth: capB.bitmap.width,
+      bitmapHeight: capB.bitmap.height,
+      cssWidth: capB.cssWidth,
+      cssHeight: capB.cssHeight,
+      detections,
+      modelName: '画面变化分析（无需模型）'
+    }
+    if (this.enricher) {
+      try {
+        await this.enricher(result)
+      } catch {
+        /* 丰富化失败不影响主流程 */
+      }
+    }
+    if (showOverlay) {
+      await renderOverlay(
+        wc,
+        detections.map((d) => ({
+          ...d.css,
+          label: d.moduleLabel ?? `${d.label} ${d.confidence.toFixed(2)}`,
+          confidence: d.confidence,
+          kind: 'detect' as const
+        }))
+      )
+    }
+    const sense: SenseOutput = { tabId: tab.id, result, bitmap: capB.bitmap, cap: capB, canvasRect, detections }
+    this.lastSense = sense
+    return sense
+  }
+
   startContinuous(intervalMs: number): void {
     if (this.timer) return
     this.runningSet(true)
     const tick = async (): Promise<void> => {
       if (this.busy) return
+      // 主窗最小化时跳过截图与推理，避免后台空转占用 CPU
+      if (!this.tabs.isMainWinActive()) return
       this.busy = true
       try {
         const s = await this.sense(true)

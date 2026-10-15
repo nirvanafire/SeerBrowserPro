@@ -3,7 +3,7 @@
  * 变化像素占比最高者即"正在渲染的游戏 Canvas"。
  */
 import type { WebContents } from 'electron'
-import type { CanvasInfo } from '@shared/types'
+import type { CanvasInfo, Rect } from '@shared/types'
 import { captureView, type CaptureOutput } from '../capture/capturer'
 import { cropCssRect } from '../capture/capturer'
 import { scoreCanvas } from './canvas-prober'
@@ -46,11 +46,22 @@ export async function detectActiveCanvas(
   await sleep(intervalMs)
   const second: CaptureOutput = await captureView(wc, cssWidth, cssHeight)
 
+  // 与视口求交：iframe 内画布可能部分滚出屏幕，裁剪前先取交集避免越界
+  const intersectViewport = (r: Rect): Rect | null => {
+    const x1 = Math.max(0, r.x)
+    const y1 = Math.max(0, r.y)
+    const x2 = Math.min(cssWidth, r.x + r.width)
+    const y2 = Math.min(cssHeight, r.y + r.height)
+    return x2 - x1 > 4 && y2 - y1 > 4 ? { x: x1, y: y1, width: x2 - x1, height: y2 - y1 } : null
+  }
+
   const scored = canvases.map((c) => {
     if (!c.visible) return { ...c, activity: 0, score: 0 }
+    const rc = intersectViewport(c.rect)
+    if (!rc) return { ...c, activity: 0, score: 0 }
     try {
-      const cropA = cropCssRect(first, c.rect)
-      const cropB = cropCssRect(second, c.rect)
+      const cropA = cropCssRect(first, rc)
+      const cropB = cropCssRect(second, rc)
       const activity = diffRatio(cropA.data, cropB.data)
       const withActivity = { ...c, activity }
       return { ...withActivity, score: scoreCanvas(withActivity, cssWidth, cssHeight) }

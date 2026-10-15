@@ -6,7 +6,7 @@ import { BrowserWindow, WebContentsView } from 'electron'
 import { CHROME_UA, CHROME_UA_METADATA } from './user-agent'
 import { randomUUID } from 'node:crypto'
 import type { TabInfo } from '@shared/types'
-import { computeWebBounds, type ContentBounds } from './layout'
+import { computeWebBounds, TOP_BAR_HEIGHT, TOP_BAR_HEIGHT_NO_TABS, type ContentBounds } from './layout'
 import { PAGE_HOOK_SOURCE } from './page-hook-source'
 
 const START_URL = 'seer://start'
@@ -28,6 +28,10 @@ export class TabManager {
   onChange: (() => void) | null = null
   /** 活动标签导航完成回调（用于自动匹配缓存） */
   onTabNavigated: ((tabId: string, url: string) => void) | null = null
+  /** 标签关闭回调（清理探测缓存 / 选区等每标签状态） */
+  onTabClosed: ((tabId: string) => void) | null = null
+  /** 顶栏高度（标签栏显隐时由渲染层通过 IPC 调整，网页视图随之布局） */
+  private topBarHeight = TOP_BAR_HEIGHT
 
   constructor(win: BrowserWindow, isDev: boolean) {
     this.win = win
@@ -194,6 +198,7 @@ export class TabManager {
       const next = this.order[this.order.length - 1]
       if (next) this.activate(next)
     }
+    this.onTabClosed?.(id)
     this.emitChange()
   }
 
@@ -216,14 +221,31 @@ export class TabManager {
     const tab = this.getActive()
     if (!tab) return
     const [w, h] = this.win.getContentSize()
-    const bounds: ContentBounds = computeWebBounds(w, h)
+    const bounds: ContentBounds = computeWebBounds(w, h, this.topBarHeight)
     tab.view.setBounds(bounds)
   }
 
   getActiveBounds(): ContentBounds | null {
     if (!this.getActive()) return null
     const [w, h] = this.win.getContentSize()
-    return computeWebBounds(w, h)
+    return computeWebBounds(w, h, this.topBarHeight)
+  }
+
+  /** 调整顶栏高度（隐藏/显示标签栏），并立即重排网页视图 */
+  setTopBarHeight(h: number): void {
+    const clamped = Math.min(TOP_BAR_HEIGHT, Math.max(TOP_BAR_HEIGHT_NO_TABS, Math.round(h)))
+    if (clamped === this.topBarHeight) return
+    this.topBarHeight = clamped
+    this.layout()
+  }
+
+  /** 主窗是否处于可正常截图/交互状态（最小化时跳过连续检测等高耗操作） */
+  isMainWinActive(): boolean {
+    try {
+      return !this.win.isDestroyed() && !this.win.isMinimized()
+    } catch {
+      return true
+    }
   }
 
   navigate(urlRaw: string): void {

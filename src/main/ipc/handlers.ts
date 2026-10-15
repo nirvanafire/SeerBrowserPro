@@ -35,6 +35,7 @@ import { performAction } from '../automation/human-input'
 import { center, resolveModuleBox } from '../vision/coords'
 import { DatasetExporter } from '../annotate/dataset-export'
 import { openAnnotatorWindow } from '../browser/annotator-window'
+import { toggleLogWindow } from '../browser/log-window'
 
 export interface Services {
   win: BrowserWindow
@@ -49,14 +50,31 @@ export interface Services {
 
 class EventBus {
   private history: LogEntry[] = []
+  /** 额外日志接收窗口（悬浮日志窗等），与主窗同步接收 EvtLog */
+  private extraTargets = new Set<BrowserWindow>()
 
   constructor(private win: BrowserWindow) {}
+
+  attach(w: BrowserWindow): void {
+    this.extraTargets.add(w)
+  }
+
+  detach(w: BrowserWindow): void {
+    this.extraTargets.delete(w)
+  }
 
   log(level: LogLevel, msg: string): void {
     const entry: LogEntry = { time: Date.now(), level, msg }
     this.history.push(entry)
     if (this.history.length > 500) this.history.shift()
     if (!this.win.isDestroyed()) this.win.webContents.send(IPC.EvtLog, entry)
+    for (const t of this.extraTargets) {
+      if (t.isDestroyed()) {
+        this.extraTargets.delete(t)
+        continue
+      }
+      t.webContents.send(IPC.EvtLog, entry)
+    }
   }
 
   recent(): LogEntry[] {
@@ -111,6 +129,68 @@ export function registerHandlers(s: Services): EventBus {
   s.runner.onState = () => emitTask()
   s.runner.onCacheChanged = emitCache
   s.runner.onFrame = (sense) => send(IPC.EvtDetect, sense.result)
+  s.engine.onIdleUnload = (m) => bus.log('info', `模型闲置 5 分钟已自动卸载以释放内存：${m.name}（再次检测时会自动重载）`)
+
+  // ---------- 导航后自动探测 Canvas（含 iframe 内画布） ----------
+  const autoProbing = new Set<string>()
+  const delay = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms))
+  const pushProbe = (tabId: string): void => {
+    if (tabId !== s.tabs.getActive()?.id) return
+    send(IPC.EvtProbe, {
+      tabId,
+      canvases: s.detect.getProbeCache(tabId),
+      bestIndex: -1,
+      selection: s.detect.getSelection(tabId)
+    })
+  }
+
+  /**
+   * 页面加载后自动探测：游戏画布通常在脚本初始化后才出现，
+   * 最多重试 4 次（每次 1.5s），探测到可见画布即停并自动选用。
+   */
+  const autoProbeTab = async (tabId: string): Promise<void> => {
+    if (autoProbing.has(tabId)) return
+    autoProbing.add(tabId)
+    try {
+      for (let attempt = 1; attempt <= 4; attempt++) {
+        await delay(1500)
+        const t = s.tabs.get(tabId)
+        if (!t) return // 标签已关闭/已导航走
+        const vb = t.view.getBounds()
+        const raw = await probeCanvases(t.view.webContents)
+        const { canvases, bestIndex } = await detectActiveCanvas(
+          t.view.webContents,
+          raw,
+          vb.width,
+          vb.height
+        )
+        s.detect.setProbeCache(tabId, canvases)
+        if (!s.detect.getSelection(tabId) && bestIndex >= 0 && canvases[bestIndex]?.visible) {
+          s.detect.setSelection(tabId, { kind: 'index', index: canvases[bestIndex].index })
+          const best = canvases[bestIndex]
+          bus.log(
+            'info',
+            `自动探测到 ${canvases.length} 个 Canvas${best.framePath !== 'top' ? '（含 iframe 内画布）' : ''}，已选用「${best.id || best.selector}」`
+          )
+        }
+        pushProbe(tabId)
+        if (bestIndex >= 0 && canvases[bestIndex]?.visible) return
+      }
+      bus.log('info', '页面加载后未自动发现可见 Canvas，可到「画布」面板手动探测或输入选择器')
+    } catch {
+      /* 自动探测失败不打扰用户，保留手动路径 */
+    } finally {
+      autoProbing.delete(tabId)
+    }
+  }
+
+  s.tabs.onTabNavigated = (tabId, url) => {
+    // 新文档：清空旧页面遗留的选区与探测缓存，防止陈旧坐标串页
+    s.detect.removeTab(tabId)
+    if (/^seer:\/\//.test(url)) return // 起始页无需探测
+    void autoProbeTab(tabId)
+  }
+  s.tabs.onTabClosed = (tabId) => s.detect.removeTab(tabId)
 
   // ---------- 标签页 ----------
   ipcMain.handle(IPC.TabList, (): TabInfo[] => s.tabs.list())
@@ -133,6 +213,11 @@ export function registerHandlers(s: Services): EventBus {
   ipcMain.handle(IPC.TabForward, () => s.tabs.forward())
   ipcMain.handle(IPC.TabReload, () => s.tabs.reload())
   ipcMain.handle(IPC.TabStop, () => s.tabs.stop())
+
+  // 标签栏显隐：渲染层调整顶栏高度，网页视图随之重排
+  ipcMain.handle(IPC.LayoutTopBar, (_e, payload: { height: number }) => {
+    if (typeof payload?.height === 'number') s.tabs.setTopBarHeight(payload.height)
+  })
 
   // ---------- Canvas 探测 ----------
   ipcMain.handle(IPC.ProbeCanvas, async () => {
@@ -207,7 +292,22 @@ export function registerHandlers(s: Services): EventBus {
   // ---------- 推理 ----------
   ipcMain.handle(IPC.DetectOnce, async () => {
     try {
-      return await s.detect.detectOnce()
+      const r = await s.detect.detectOnce()
+      // 推送给检测面板（此前单次推理结果只在返回值里，面板不显示）
+      send(IPC.EvtDetect, r)
+      return r
+    } catch (e) {
+      bus.log('error', e instanceof Error ? e.message : String(e))
+      throw e
+    }
+  })
+  // 智能找功能：双帧差分发现页面动态功能区域（无需模型）
+  ipcMain.handle(IPC.DetectFeatures, async () => {
+    try {
+      const r = (await s.detect.detectFeatures(true)).result
+      send(IPC.EvtDetect, r)
+      bus.log('info', `智能找功能完成：发现 ${r.detections.length} 个动态区域`)
+      return r
     } catch (e) {
       bus.log('error', e instanceof Error ? e.message : String(e))
       throw e
@@ -232,8 +332,12 @@ export function registerHandlers(s: Services): EventBus {
     const bounds = s.tabs.getActiveBounds()
     const tab = s.tabs.getActive()
     if (!det || !bounds || !tab) return false
+    if (sense.tabId !== tab.id) {
+      bus.log('warn', '检测结果来自其他标签页，请切换回去或重新检测')
+      return false
+    }
     const c = center(det.css)
-    bus.log('action', `手动点击检测目标「${det.label}」@(${Math.round(c.x)},${Math.round(c.y)})`)
+    bus.log('action', `手动点击检测目标「${det.moduleLabel ?? det.label}」@(${Math.round(c.x)},${Math.round(c.y)})`)
     await performAction(tab.view.webContents, 'click', c.x, c.y, bounds.width, bounds.height)
     return true
   })
@@ -247,6 +351,10 @@ export function registerHandlers(s: Services): EventBus {
     const tab = s.tabs.getActive()
     if (!mod || !sense || !bounds || !tab) {
       bus.log('warn', '无法点击功能点：请先执行一次检测（需要最新截图坐标系）')
+      return false
+    }
+    if (sense.tabId !== tab.id) {
+      bus.log('warn', '检测结果来自其他标签页，请切换回去或重新检测')
       return false
     }
     const box = resolveModuleBox(mod, sense.canvasRect, sense.cap.cssWidth, sense.cap.cssHeight)
@@ -443,6 +551,14 @@ export function registerHandlers(s: Services): EventBus {
   })
 
   ipcMain.handle(IPC.LogList, () => bus.recent())
+
+  // 悬浮日志窗口：已开则关，未开则建（attach/detach 接入日志广播）
+  ipcMain.handle(IPC.LogWindowToggle, () =>
+    toggleLogWindow(s.win, {
+      onAttach: (w) => bus.attach(w),
+      onDetach: (w) => bus.detach(w)
+    })
+  )
 
   // 初始事件
   emitModels()
